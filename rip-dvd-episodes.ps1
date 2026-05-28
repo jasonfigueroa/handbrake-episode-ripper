@@ -645,11 +645,8 @@ function Invoke-HandBrakeProcessWithProgress {
 
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
-    $outputLines = [System.Collections.Generic.List[string]]::new()
     $progressId = 1
     $progressState = @{ LastToken = $null }
-    $stdoutSnapshot = ''
-    $stderrSnapshot = ''
 
     try {
         $quotedArguments = @(
@@ -678,34 +675,17 @@ function Invoke-HandBrakeProcessWithProgress {
             $currentStdout = if (Test-Path -Path $stdoutFile) { [string](Get-Content -Path $stdoutFile -Raw) } else { '' }
             $currentStderr = if (Test-Path -Path $stderrFile) { [string](Get-Content -Path $stderrFile -Raw) } else { '' }
 
-            if ($currentStdout.Length -gt $stdoutSnapshot.Length) {
-                $outputLines.Add($currentStdout.Substring($stdoutSnapshot.Length))
-            }
-            if ($currentStderr.Length -gt $stderrSnapshot.Length) {
-                $outputLines.Add($currentStderr.Substring($stderrSnapshot.Length))
-            }
-
-            $stdoutSnapshot = $currentStdout
-            $stderrSnapshot = $currentStderr
-
             Write-HandBrakeProgressFromText -Text (@($currentStdout, $currentStderr) -join [Environment]::NewLine) -Activity $ProgressActivity -ProgressId $progressId -State $progressState
         }
 
         $finalStdout = if (Test-Path -Path $stdoutFile) { [string](Get-Content -Path $stdoutFile -Raw) } else { '' }
         $finalStderr = if (Test-Path -Path $stderrFile) { [string](Get-Content -Path $stderrFile -Raw) } else { '' }
 
-        if ($finalStdout.Length -gt $stdoutSnapshot.Length) {
-            $outputLines.Add($finalStdout.Substring($stdoutSnapshot.Length))
-        }
-        if ($finalStderr.Length -gt $stderrSnapshot.Length) {
-            $outputLines.Add($finalStderr.Substring($stderrSnapshot.Length))
-        }
-
         Write-HandBrakeProgressFromText -Text (@($finalStdout, $finalStderr) -join [Environment]::NewLine) -Activity $ProgressActivity -ProgressId $progressId -State $progressState
 
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
-            Output   = @($outputLines.ToArray()) -join [Environment]::NewLine
+            Output   = @($finalStdout, $finalStderr) -join [Environment]::NewLine
         }
     }
     finally {
