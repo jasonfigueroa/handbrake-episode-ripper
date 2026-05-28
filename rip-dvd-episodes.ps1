@@ -675,8 +675,8 @@ function Invoke-HandBrakeProcessWithProgress {
         while (-not $process.HasExited) {
             Start-Sleep -Milliseconds 250
 
-            $currentStdout = if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
-            $currentStderr = if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
+            $currentStdout = [string](if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' })
+            $currentStderr = [string](if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' })
 
             if ($currentStdout.Length -gt $stdoutSnapshot.Length) {
                 $outputLines.Add($currentStdout.Substring($stdoutSnapshot.Length))
@@ -691,8 +691,8 @@ function Invoke-HandBrakeProcessWithProgress {
             Write-HandBrakeProgressFromText -Text (@($currentStdout, $currentStderr) -join [Environment]::NewLine) -Activity $ProgressActivity -ProgressId $progressId -State $progressState
         }
 
-        $finalStdout = if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
-        $finalStderr = if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
+        $finalStdout = [string](if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' })
+        $finalStderr = [string](if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' })
 
         if ($finalStdout.Length -gt $stdoutSnapshot.Length) {
             $outputLines.Add($finalStdout.Substring($stdoutSnapshot.Length))
