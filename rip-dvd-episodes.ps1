@@ -274,6 +274,58 @@ function Convert-SecondsToDuration {
     return ('{0:00}:{1:00}:{2:00}' -f [int]$timeSpan.TotalHours, $timeSpan.Minutes, $timeSpan.Seconds)
 }
 
+function Convert-HandBrakeEtaToSeconds {
+    param(
+        [string]$EtaText
+    )
+
+    if ([string]::IsNullOrWhiteSpace($EtaText)) {
+        return $null
+    }
+
+    if ($EtaText -match '^(?<Hours>\d+)h(?<Minutes>\d+)m(?<Seconds>\d+)s$') {
+        return ([int]$Matches.Hours * 3600) + ([int]$Matches.Minutes * 60) + [int]$Matches.Seconds
+    }
+
+    return $null
+}
+
+function Write-HandBrakeProgress {
+    param(
+        [string]$Line,
+        [string]$Activity,
+        [int]$ProgressId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return
+    }
+
+    if ($Line -match 'Encoding: task (?<Task>\d+) of (?<Total>\d+), (?<Percent>\d+(?:\.\d+)?) %(?:.*?ETA (?<Eta>\d+h\d+m\d+s))?') {
+        $percent = [double]$Matches.Percent
+        $etaText = $Matches.Eta
+        $etaSeconds = Convert-HandBrakeEtaToSeconds -EtaText $etaText
+
+        $status = 'Encoding: task {0} of {1}, {2:N2} %' -f $Matches.Task, $Matches.Total, $percent
+        if (-not [string]::IsNullOrWhiteSpace($etaText)) {
+            $status = '{0} ETA {1}' -f $status, $etaText
+        }
+
+        $progressParameters = @{
+            Id              = $ProgressId
+            Activity        = $Activity
+            Status          = $status
+            PercentComplete = [math]::Max(0, [math]::Min(100, $percent))
+        }
+
+        if ($null -ne $etaSeconds -and $etaSeconds -ge 0) {
+            $progressParameters.SecondsRemaining = $etaSeconds
+        }
+
+        Write-Progress @progressParameters
+    }
+}
+
 function Get-Median {
     param(
         [int[]]$Values
@@ -516,11 +568,41 @@ function Invoke-HandBrakeScan {
 function Invoke-HandBrakeProcess {
     param(
         [string]$HandBrakeCli,
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [switch]$ShowProgress,
+        [string]$ProgressActivity
     )
 
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $outputLines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $progressId = 1
+
+    $outputHandler = {
+        param($sender, $eventArgs)
+
+        if ($null -eq $eventArgs.Data) {
+            return
+        }
+
+        $line = [string]$eventArgs.Data
+        $null = $outputLines.Enqueue($line)
+        if ($ShowProgress) {
+            Write-HandBrakeProgress -Line $line -Activity $ProgressActivity -ProgressId $progressId
+        }
+    }.GetNewClosure()
+
+    $errorHandler = {
+        param($sender, $eventArgs)
+
+        if ($null -eq $eventArgs.Data) {
+            return
+        }
+
+        $line = [string]$eventArgs.Data
+        $null = $outputLines.Enqueue($line)
+        if ($ShowProgress) {
+            Write-HandBrakeProgress -Line $line -Activity $ProgressActivity -ProgressId $progressId
+        }
+    }.GetNewClosure()
 
     try {
         $quotedArguments = @(
@@ -536,24 +618,43 @@ function Invoke-HandBrakeProcess {
             }
         ) -join ' '
 
-        $process = Start-Process -FilePath $HandBrakeCli `
-            -ArgumentList $quotedArguments `
-            -NoNewWindow `
-            -PassThru `
-            -Wait `
-            -RedirectStandardOutput $stdoutFile `
-            -RedirectStandardError $stderrFile
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $process.StartInfo.FileName = $HandBrakeCli
+        $process.StartInfo.Arguments = $quotedArguments
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        $process.StartInfo.CreateNoWindow = $true
 
-        $stdout = if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
-        $stderr = if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
+        $outputSubscription = Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputHandler
+        $errorSubscription = Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action $errorHandler
+
+        try {
+            $null = $process.Start()
+            $process.BeginOutputReadLine()
+            $process.BeginErrorReadLine()
+            $process.WaitForExit()
+            $process.WaitForExit()
+        }
+        finally {
+            if ($outputSubscription) {
+                Unregister-Event -SubscriptionId $outputSubscription.Id -ErrorAction SilentlyContinue
+            }
+            if ($errorSubscription) {
+                Unregister-Event -SubscriptionId $errorSubscription.Id -ErrorAction SilentlyContinue
+            }
+        }
 
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
-            Output   = @($stdout, $stderr) -join [Environment]::NewLine
+            Output   = @($outputLines.ToArray()) -join [Environment]::NewLine
         }
     }
     finally {
-        Remove-Item -Path $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+        if ($ShowProgress) {
+            Write-Progress -Id $progressId -Activity $ProgressActivity -Completed
+        }
     }
 }
 
@@ -740,7 +841,7 @@ for ($index = 0; $index -lt @($selectedTitles).Count; $index++) {
     }
 
     Write-Log ('Encoding title {0} to {1}' -f $titleNumber, $outputPath)
-    $encodeResult = Invoke-HandBrakeProcess -HandBrakeCli $handBrakeCli -Arguments @(
+    $encodeResult = Invoke-HandBrakeProcess -HandBrakeCli $handBrakeCli -ShowProgress -ProgressActivity ('Encoding title {0}' -f $titleNumber) -Arguments @(
         '--preset', $Preset,
         '--format', 'av_mp4',
         '--input', $dvdDrive,
