@@ -303,7 +303,7 @@ function Write-HandBrakeProgress {
 
     if ($Line -match 'Encoding: task (?<Task>\d+) of (?<Total>\d+), (?<Percent>\d+(?:\.\d+)?) %(?:.*?ETA (?<Eta>\d+h\d+m\d+s))?') {
         $percent = [double]$Matches.Percent
-        $etaText = $Matches.Eta
+        $etaText = if ($Matches.ContainsKey('Eta')) { $Matches['Eta'] } else { $null }
         $etaSeconds = Convert-HandBrakeEtaToSeconds -EtaText $etaText
 
         $status = 'Encoding: task {0} of {1}, {2:N2} %' -f $Matches.Task, $Matches.Total, $percent
