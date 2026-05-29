@@ -339,12 +339,12 @@ function Write-HandBrakeProgressFromText {
     }
 
     $pattern = 'Encoding: task (?<Task>\d+) of (?<Total>\d+), (?<Percent>\d+(?:\.\d+)?) %(?:.*?ETA (?<Eta>\d+h\d+m\d+s))?'
-    $matches = [regex]::Matches($Text, $pattern)
-    if ($matches.Count -eq 0) {
+    $progressMatches = [regex]::Matches($Text, $pattern)
+    if ($progressMatches.Count -eq 0) {
         return
     }
 
-    $latest = $matches[$matches.Count - 1].Value
+    $latest = $progressMatches[$progressMatches.Count - 1].Value
     if ($State.LastToken -eq $latest) {
         return
     }
