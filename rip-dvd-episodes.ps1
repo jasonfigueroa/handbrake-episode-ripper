@@ -623,6 +623,10 @@ function Invoke-HandBrakeProcess {
             -RedirectStandardOutput $stdoutFile `
             -RedirectStandardError $stderrFile
 
+        if ($null -eq $process) {
+            throw 'HandBrakeCLI failed to start.'
+        }
+
         $stdout = if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
         $stderr = if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
 
@@ -668,6 +672,10 @@ function Invoke-HandBrakeProcessWithProgress {
             -PassThru `
             -RedirectStandardOutput $stdoutFile `
             -RedirectStandardError $stderrFile
+
+        if ($null -eq $process) {
+            throw 'HandBrakeCLI failed to start.'
+        }
 
         while (-not $process.HasExited) {
             Start-Sleep -Milliseconds 250
