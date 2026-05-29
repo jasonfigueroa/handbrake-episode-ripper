@@ -44,6 +44,10 @@ Season output directories are written under `output/`.
 - If title selection is ambiguous, the script allows manual title entry.
 - If HandBrake only sees one title, check the scan output and disc handling.
 
+## Limitations
+
+- `Write-Progress` can redraw awkwardly if the PowerShell window is resized during encoding. This is a console-host rendering quirk, not a script failure.
+
 ## Authors
 - Jason Figueroa and [SafeCode-Box 🛡️](https://github.com/jasonfigueroa/SafeCode-Box)
 
