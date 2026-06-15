@@ -274,6 +274,85 @@ function Convert-SecondsToDuration {
     return ('{0:00}:{1:00}:{2:00}' -f [int]$timeSpan.TotalHours, $timeSpan.Minutes, $timeSpan.Seconds)
 }
 
+function Convert-HandBrakeEtaToSeconds {
+    param(
+        [string]$EtaText
+    )
+
+    if ([string]::IsNullOrWhiteSpace($EtaText)) {
+        return $null
+    }
+
+    if ($EtaText -match '^(?<Hours>\d+)h(?<Minutes>\d+)m(?<Seconds>\d+)s$') {
+        return ([int]$Matches.Hours * 3600) + ([int]$Matches.Minutes * 60) + [int]$Matches.Seconds
+    }
+
+    return $null
+}
+
+function Write-HandBrakeProgress {
+    param(
+        [string]$Line,
+        [string]$Activity,
+        [int]$ProgressId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return
+    }
+
+    if ($Line -match 'Encoding: task (?<Task>\d+) of (?<Total>\d+), (?<Percent>\d+(?:\.\d+)?) %(?:.*?ETA (?<Eta>\d+h\d+m\d+s))?') {
+        $percent = [double]$Matches.Percent
+        $etaText = if ($Matches.ContainsKey('Eta')) { $Matches['Eta'] } else { $null }
+        $etaSeconds = Convert-HandBrakeEtaToSeconds -EtaText $etaText
+
+        $status = 'Encoding: task {0} of {1}, {2:N2} %' -f $Matches.Task, $Matches.Total, $percent
+        if (-not [string]::IsNullOrWhiteSpace($etaText)) {
+            $status = '{0} ETA {1}' -f $status, $etaText
+        }
+
+        $progressParameters = @{
+            Id              = $ProgressId
+            Activity        = $Activity
+            Status          = $status
+            PercentComplete = [math]::Max(0, [math]::Min(100, $percent))
+        }
+
+        if ($null -ne $etaSeconds -and $etaSeconds -ge 0) {
+            $progressParameters.SecondsRemaining = $etaSeconds
+        }
+
+        Write-Progress @progressParameters
+    }
+}
+
+function Write-HandBrakeProgressFromText {
+    param(
+        [string]$Text,
+        [string]$Activity,
+        [int]$ProgressId,
+        [hashtable]$State
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return
+    }
+
+    $pattern = 'Encoding: task (?<Task>\d+) of (?<Total>\d+), (?<Percent>\d+(?:\.\d+)?) %(?:.*?ETA (?<Eta>\d+h\d+m\d+s))?'
+    $progressMatches = [regex]::Matches($Text, $pattern)
+    if ($progressMatches.Count -eq 0) {
+        return
+    }
+
+    $latest = $progressMatches[$progressMatches.Count - 1].Value
+    if ($State.LastToken -eq $latest) {
+        return
+    }
+
+    $State.LastToken = $latest
+    Write-HandBrakeProgress -Line $latest -Activity $Activity -ProgressId $ProgressId
+}
+
 function Get-Median {
     param(
         [int[]]$Values
@@ -544,6 +623,10 @@ function Invoke-HandBrakeProcess {
             -RedirectStandardOutput $stdoutFile `
             -RedirectStandardError $stderrFile
 
+        if ($null -eq $process) {
+            throw 'HandBrakeCLI failed to start.'
+        }
+
         $stdout = if (Test-Path -Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
         $stderr = if (Test-Path -Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
 
@@ -553,6 +636,68 @@ function Invoke-HandBrakeProcess {
         }
     }
     finally {
+        Remove-Item -Path $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-HandBrakeProcessWithProgress {
+    param(
+        [string]$HandBrakeCli,
+        [string[]]$Arguments,
+        [string]$ProgressActivity
+    )
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $progressId = 1
+    $progressState = @{ LastToken = $null }
+
+    try {
+        $quotedArguments = @(
+            foreach ($argument in $Arguments) {
+                if ($null -eq $argument) { continue }
+                $text = [string]$argument
+                if ($text -match '[\s"]') {
+                    '"{0}"' -f ($text -replace '"', '\"')
+                }
+                else {
+                    $text
+                }
+            }
+        ) -join ' '
+
+        $process = Start-Process -FilePath $HandBrakeCli `
+            -ArgumentList $quotedArguments `
+            -NoNewWindow `
+            -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        if ($null -eq $process) {
+            throw 'HandBrakeCLI failed to start.'
+        }
+
+        while (-not $process.HasExited) {
+            Start-Sleep -Milliseconds 250
+
+            $currentStdout = if (Test-Path -Path $stdoutFile) { [string](Get-Content -Path $stdoutFile -Raw) } else { '' }
+            $currentStderr = if (Test-Path -Path $stderrFile) { [string](Get-Content -Path $stderrFile -Raw) } else { '' }
+
+            Write-HandBrakeProgressFromText -Text (@($currentStdout, $currentStderr) -join [Environment]::NewLine) -Activity $ProgressActivity -ProgressId $progressId -State $progressState
+        }
+
+        $finalStdout = if (Test-Path -Path $stdoutFile) { [string](Get-Content -Path $stdoutFile -Raw) } else { '' }
+        $finalStderr = if (Test-Path -Path $stderrFile) { [string](Get-Content -Path $stderrFile -Raw) } else { '' }
+
+        Write-HandBrakeProgressFromText -Text (@($finalStdout, $finalStderr) -join [Environment]::NewLine) -Activity $ProgressActivity -ProgressId $progressId -State $progressState
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output   = @($finalStdout, $finalStderr) -join [Environment]::NewLine
+        }
+    }
+    finally {
+        Write-Progress -Id $progressId -Activity $ProgressActivity -Completed
         Remove-Item -Path $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     }
 }
@@ -740,7 +885,7 @@ for ($index = 0; $index -lt @($selectedTitles).Count; $index++) {
     }
 
     Write-Log ('Encoding title {0} to {1}' -f $titleNumber, $outputPath)
-    $encodeResult = Invoke-HandBrakeProcess -HandBrakeCli $handBrakeCli -Arguments @(
+    $encodeResult = Invoke-HandBrakeProcessWithProgress -HandBrakeCli $handBrakeCli -ProgressActivity ('Encoding title {0}' -f $titleNumber) -Arguments @(
         '--preset', $Preset,
         '--format', 'av_mp4',
         '--input', $dvdDrive,
